@@ -1285,6 +1285,9 @@ void EmitX64::EmitFPVectorMul64(EmitContext& ctx, IR::Inst* inst) {
 
 template<typename FPT, bool needs_rounding_correction, bool needs_nan_correction>
 static void EmitFPVectorMulAddFallback(VectorArray<FPT>& result, const VectorArray<FPT>& addend, const VectorArray<FPT>& op1, const VectorArray<FPT>& op2, FP::FPCR fpcr, [[maybe_unused]] FP::FPSR& fpsr) {
+#if defined(__clang__)
+#pragma clang loop vectorize(enable)
+#endif
     for (size_t i = 0; i < result.size(); i++) {
         if constexpr (needs_rounding_correction) {
             constexpr FPT non_sign_mask = FP::FPInfo<FPT>::exponent_mask | FP::FPInfo<FPT>::mantissa_mask;

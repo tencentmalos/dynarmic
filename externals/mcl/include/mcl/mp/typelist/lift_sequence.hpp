@@ -5,6 +5,7 @@
 #pragma once
 
 #include <type_traits>
+#include <utility>
 
 #include "mcl/mp/typelist/list.hpp"
 
@@ -19,6 +20,13 @@ template<class T, template<class, T...> class VLT, T... values>
 struct lift_sequence_impl<VLT<T, values...>> {
     using type = list<std::integral_constant<T, values>...>;
 };
+
+#if defined(__clang__) && !defined(_MSC_VER)
+template<class T, T... Ints>
+struct lift_sequence_impl<std::integer_sequence<T, Ints...>> {
+    using type = list<std::integral_constant<T, Ints>...>;
+};
+#endif
 
 }  // namespace detail
 
