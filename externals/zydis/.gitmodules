@@ -1,3 +1,3 @@
 [submodule "dependencies/zycore"]
 	path = dependencies/zycore
-	url = https://github.com/zyantific/zycore-c
+	url = git@github.com:tencentmalos/zycore-c.git
