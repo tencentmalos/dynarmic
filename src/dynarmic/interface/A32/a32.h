@@ -81,6 +81,10 @@ public:
     /// Clears exclusive state for this core.
     void ClearExclusiveState();
 
+    /// Restores local exclusive state. The caller must also restore the matching global monitor
+    /// reservation before executing an exclusive write.
+    void SetExclusiveState();
+
     /**
      * Returns true if Jit::Run was called but hasn't returned yet.
      * i.e.: We're in a callback.

@@ -141,6 +141,10 @@ struct Jit::Impl {
         jit_state.exclusive_state = 0;
     }
 
+    void SetExclusiveState() {
+        jit_state.exclusive_state = 1;
+    }
+
     std::array<u32, 16>& Regs() {
         return jit_state.Reg;
     }
@@ -334,6 +338,10 @@ void Jit::SetFpscr(std::uint32_t value) {
 
 void Jit::ClearExclusiveState() {
     impl->ClearExclusiveState();
+}
+
+void Jit::SetExclusiveState() {
+    impl->SetExclusiveState();
 }
 
 void Jit::DumpDisassembly() const {

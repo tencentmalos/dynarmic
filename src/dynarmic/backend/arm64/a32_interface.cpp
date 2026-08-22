@@ -122,6 +122,10 @@ struct Jit::Impl final {
         current_state.exclusive_state = false;
     }
 
+    void SetExclusiveState() {
+        current_state.exclusive_state = true;
+    }
+
     void DumpDisassembly() const {
         ASSERT_FALSE("Unimplemented");
     }
@@ -230,6 +234,10 @@ void Jit::SetFpscr(std::uint32_t value) {
 
 void Jit::ClearExclusiveState() {
     impl->ClearExclusiveState();
+}
+
+void Jit::SetExclusiveState() {
+    impl->SetExclusiveState();
 }
 
 void Jit::DumpDisassembly() const {
