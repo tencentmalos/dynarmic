@@ -84,6 +84,9 @@ enum class InstructionCacheOperation {
 struct UserCallbacks {
     virtual ~UserCallbacks() = default;
 
+    /// Signature of a host function that PreCodeTranslationHook can request a call to.
+    using PreCodeTranslationCallee = void (*)(std::uint64_t, std::uint64_t);
+
     // All reads through this callback are 4-byte aligned.
     // Memory must be interpreted as little endian.
     virtual std::optional<std::uint32_t> MemoryReadCode(VAddr vaddr) { return MemoryRead32(vaddr); }
@@ -125,6 +128,21 @@ struct UserCallbacks {
     virtual void DataCacheOperationRaised(DataCacheOperation /*op*/, VAddr /*value*/) {}
     virtual void InstructionCacheOperationRaised(InstructionCacheOperation /*op*/, VAddr /*value*/) {}
     virtual void InstructionSynchronizationBarrierRaised() {}
+
+    // This function is called before the instruction at pc is translated, when
+    // UserConfig::hook_pre_code_translation is set.
+    //
+    // Returning a non-null function pointer makes dynarmic emit a call to it at that point in the
+    // block; the two arguments are passed through unchanged. The instruction at pc is always
+    // translated afterwards, so this appends to the block rather than replacing the instruction.
+    // Returning nullptr (the default) leaves the block unchanged.
+    //
+    // The emitted callee is deliberately a plain function pointer taking integers so that the IR
+    // emitter type does not become part of this public interface.
+    virtual PreCodeTranslationCallee PreCodeTranslationHook(VAddr /*pc*/, std::uint64_t& /*arg1*/,
+                                                            std::uint64_t& /*arg2*/) {
+        return nullptr;
+    }
 
     // Timing-related callbacks
     // ticks ticks have passed
@@ -176,6 +194,11 @@ struct UserConfig {
     /// When set to true, UserCallbacks::ExceptionRaised will be called when any hint
     /// instruction is executed.
     bool hook_hint_instructions = false;
+
+    /// When set to true, UserCallbacks::PreCodeTranslationHook will be called before each
+    /// instruction is translated, allowing the callee to emit additional IR at that point.
+    /// When set to false (the default), the hook is never called and translation is unchanged.
+    bool hook_pre_code_translation = false;
 
     /// Counter-timer frequency register. The value of the register is not interpreted by
     /// dynarmic.

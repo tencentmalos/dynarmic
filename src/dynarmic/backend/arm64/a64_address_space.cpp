@@ -329,8 +329,18 @@ A64AddressSpace::A64AddressSpace(const A64::UserConfig& conf)
 
 IR::Block A64AddressSpace::GenerateIR(IR::LocationDescriptor descriptor) const {
     const auto get_code = [this](u64 vaddr) { return conf.callbacks->MemoryReadCode(vaddr); };
+    A64::TranslationOptions translation_options{};
+    translation_options.define_unpredictable_behaviour = conf.define_unpredictable_behaviour;
+    translation_options.wall_clock_cntpct = conf.wall_clock_cntpct;
+    if (conf.hook_pre_code_translation) {
+        translation_options.pre_code_translation_hook = [this](u64 pc) {
+            A64::PreCodeTranslationCall call;
+            call.callee = conf.callbacks->PreCodeTranslationHook(pc, call.arg1, call.arg2);
+            return call;
+        };
+    }
     IR::Block ir_block = A64::Translate(A64::LocationDescriptor{descriptor}, get_code,
-                                        {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct});
+                                        std::move(translation_options));
 
     Optimization::A64CallbackConfigPass(ir_block, conf);
     Optimization::NamingPass(ir_block);

@@ -24,6 +24,14 @@ IR::Block Translate(LocationDescriptor descriptor, MemoryReadCodeFuncType memory
         const u64 pc = visitor.ir.current_location->PC();
 
         if (const auto instruction = memory_read_code(pc)) {
+            if (visitor.options.pre_code_translation_hook) {
+                const auto call = visitor.options.pre_code_translation_hook(pc);
+                if (call.callee) {
+                    visitor.ir.CallHostFunction(call.callee, visitor.ir.Imm64(call.arg1),
+                                                visitor.ir.Imm64(call.arg2));
+                }
+            }
+
             if (auto decoder = Decode<TranslatorVisitor>(*instruction)) {
                 should_continue = decoder->get().call(visitor, *instruction);
             } else {

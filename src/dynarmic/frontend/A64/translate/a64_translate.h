@@ -21,6 +21,18 @@ class LocationDescriptor;
 
 using MemoryReadCodeFuncType = std::function<std::optional<u32>(u64 vaddr)>;
 
+/// Describes a host call to emit before the instruction at a given pc.
+struct PreCodeTranslationCall {
+    /// Host function to call. A null value means "emit nothing".
+    void (*callee)(u64, u64) = nullptr;
+    u64 arg1 = 0;
+    u64 arg2 = 0;
+};
+
+/// Queried before the instruction at pc is translated. Any call it returns is emitted before the
+/// instruction, which is then still translated normally.
+using PreCodeTranslationHookType = std::function<PreCodeTranslationCall(u64 pc)>;
+
 struct TranslationOptions {
     /// This changes what IR we emit when we translate an unpredictable instruction.
     /// If this is false, the ExceptionRaised IR instruction is emitted.
@@ -35,6 +47,10 @@ struct TranslationOptions {
     /// If this is false, we treat the instruction as a NOP.
     /// If this is true, we emit an ExceptionRaised instruction.
     bool hook_hint_instructions = true;
+
+    /// If set, this is queried before each instruction is translated so that a host call can be
+    /// emitted at that point. If unset (the default), translation is unchanged.
+    PreCodeTranslationHookType pre_code_translation_hook = nullptr;
 };
 
 /**
