@@ -39,7 +39,14 @@ template<>
 void EmitIR<IR::Opcode::CallHostFunction>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
 
-    ctx.reg_alloc.PrepareForCall(args[1], args[2], args[3]);
+    // The two- and three-argument IREmitter overloads leave the unused trailing operands as void
+    // Values. Passing one to PrepareForCall would try to marshal it into a parameter register and
+    // assert, so only forward the operands that were actually supplied.
+    const auto optional_arg = [&args](size_t index) -> std::optional<Argument::copyable_reference> {
+        return args[index].GetType() == IR::Type::Void ? std::nullopt : std::make_optional(std::ref(args[index]));
+    };
+
+    ctx.reg_alloc.PrepareForCall(optional_arg(1), optional_arg(2), optional_arg(3));
     code.MOV(Xscratch0, args[0].GetImmediateU64());
     code.BLR(Xscratch0);
 }
