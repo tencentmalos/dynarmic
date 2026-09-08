@@ -6,6 +6,7 @@
 #include <mach/mach.h>
 #include <mach/message.h>
 
+#include <atomic>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -80,6 +81,12 @@ private:
 
     std::thread thread;
     mach_port_t server_port;
+    std::atomic_bool stopping{false};
+    exception_mask_t previous_masks[EXC_TYPES_COUNT]{};
+    mach_port_t previous_ports[EXC_TYPES_COUNT]{};
+    exception_behavior_t previous_behaviors[EXC_TYPES_COUNT]{};
+    thread_state_flavor_t previous_flavors[EXC_TYPES_COUNT]{};
+    mach_msg_type_number_t previous_count = EXC_TYPES_COUNT;
 
     void MessagePump();
 };
@@ -89,20 +96,59 @@ MachHandler::MachHandler() {
 
     KCHECK(mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &server_port));
     KCHECK(mach_port_insert_right(mach_task_self(), server_port, server_port, MACH_MSG_TYPE_MAKE_SEND));
-    KCHECK(task_set_exception_ports(mach_task_self(), EXC_MASK_BAD_ACCESS, server_port, EXCEPTION_STATE | MACH_EXCEPTION_CODES, THREAD_STATE));
-
-    // The below doesn't actually work, and I'm not sure why; since this doesn't work we'll have a spurious error message upon shutdown.
-    mach_port_t prev;
-    KCHECK(mach_port_request_notification(mach_task_self(), server_port, MACH_NOTIFY_PORT_DESTROYED, 0, server_port, MACH_MSG_TYPE_MAKE_SEND_ONCE, &prev));
+    KCHECK(task_swap_exception_ports(mach_task_self(), EXC_MASK_BAD_ACCESS, server_port,
+                                    EXCEPTION_STATE | MACH_EXCEPTION_CODES, THREAD_STATE,
+                                    previous_masks, &previous_count, previous_ports,
+                                    previous_behaviors, previous_flavors));
 
 #undef KCHECK
 
     thread = std::thread(&MachHandler::MessagePump, this);
-    thread.detach();
 }
 
 MachHandler::~MachHandler() {
-    mach_port_deallocate(mach_task_self(), server_port);
+    // Stop routing new faults to this object before waking and joining its receiver. Restore only
+    // masks we still own: a debugger may have installed a different task handler since startup.
+    exception_mask_t masks[EXC_TYPES_COUNT]{};
+    mach_port_t ports[EXC_TYPES_COUNT]{};
+    exception_behavior_t behaviors[EXC_TYPES_COUNT]{};
+    thread_state_flavor_t flavors[EXC_TYPES_COUNT]{};
+    mach_msg_type_number_t count = EXC_TYPES_COUNT;
+    if (task_get_exception_ports(mach_task_self(), EXC_MASK_BAD_ACCESS, masks, &count, ports,
+                                 behaviors, flavors) == KERN_SUCCESS) {
+        for (mach_msg_type_number_t i = 0; i < count; ++i) {
+            if (ports[i] == server_port) {
+                exception_mask_t remaining = masks[i];
+                for (mach_msg_type_number_t j = 0; j < previous_count; ++j) {
+                    const auto restore = remaining & previous_masks[j];
+                    if (restore != 0) {
+                        task_set_exception_ports(mach_task_self(), restore, previous_ports[j],
+                                                 previous_behaviors[j], previous_flavors[j]);
+                        remaining &= ~restore;
+                    }
+                }
+                if (remaining != 0) {
+                    task_set_exception_ports(mach_task_self(), remaining, MACH_PORT_NULL,
+                                             EXCEPTION_DEFAULT, THREAD_STATE_NONE);
+                }
+            }
+            if (ports[i] != MACH_PORT_NULL) {
+                mach_port_deallocate(mach_task_self(), ports[i]);
+            }
+        }
+    }
+    stopping.store(true, std::memory_order_release);
+    // Deallocating only the send right leaves the receive right alive and mach_msg blocked.
+    // Destroying the port interrupts the receive; all object members stay alive until join.
+    mach_port_destroy(mach_task_self(), server_port);
+    if (thread.joinable()) {
+        thread.join();
+    }
+    for (mach_msg_type_number_t i = 0; i < previous_count; ++i) {
+        if (previous_ports[i] != MACH_PORT_NULL) {
+            mach_port_deallocate(mach_task_self(), previous_ports[i]);
+        }
+    }
 }
 
 void MachHandler::MessagePump() {
@@ -113,6 +159,9 @@ void MachHandler::MessagePump() {
     while (true) {
         mr = mach_msg(&request.head, MACH_RCV_MSG | MACH_RCV_LARGE, 0, sizeof(request), server_port, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
         if (mr != MACH_MSG_SUCCESS) {
+            if (stopping.load(std::memory_order_acquire)) {
+                return;
+            }
             fmt::print(stderr, "dynarmic: macOS MachHandler: Failed to receive mach message. error: {:#08x} ({})\n", mr, mach_error_string(mr));
             return;
         }
