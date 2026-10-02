@@ -13,6 +13,65 @@
 using namespace Dynarmic;
 using namespace oaknut::util;
 
+TEST_CASE("A64: unsigned 64-bit vector comparisons", "[a64][vector-u64]") {
+    A64TestEnv env;
+    A64::Jit jit{A64::UserConfig{&env}};
+    oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+
+    // CMHI/CMHS lower through VectorMinU64/VectorMaxU64 even though guest
+    // UMIN/UMAX do not support 64-bit lanes. Keep both sources live, then
+    // exercise destination/source aliasing and identical operands.
+    code.CMHI(V2.D2(), V0.D2(), V1.D2());
+    code.CMHS(V3.D2(), V0.D2(), V1.D2());
+    code.CMHI(V4.D2(), V1.D2(), V0.D2());
+    code.CMHS(V5.D2(), V1.D2(), V0.D2());
+    code.CMHI(V6.D2(), V0.D2(), V0.D2());
+    code.CMHS(V7.D2(), V1.D2(), V1.D2());
+    code.CMHI(V8.D2(), V8.D2(), V9.D2());
+    code.CMHI(V11.D2(), V10.D2(), V11.D2());
+    code.CMHS(V12.D2(), V12.D2(), V13.D2());
+    code.CMHS(V15.D2(), V14.D2(), V15.D2());
+
+    constexpr std::array<u64, 7> values{
+        0, 1, 0xFFFFFFFF, 0x100000000, 0x7FFFFFFFFFFFFFFF,
+        0x8000000000000000, 0xFFFFFFFFFFFFFFFF,
+    };
+    for (const u64 a : values) {
+        for (const u64 b : values) {
+            CAPTURE(a, b);
+            const Vector lhs{a, b};
+            const Vector rhs{b, a};
+            const Vector greater{a > b ? ~u64{0} : 0, b > a ? ~u64{0} : 0};
+            const Vector greater_equal{a >= b ? ~u64{0} : 0, b >= a ? ~u64{0} : 0};
+            jit.SetPC(0);
+            jit.SetVector(0, lhs);
+            jit.SetVector(1, rhs);
+            for (size_t reg = 8; reg < 16; ++reg) {
+                jit.SetVector(reg, reg % 2 == 0 ? lhs : rhs);
+            }
+            env.ticks_left = env.code_mem.size();
+            jit.Run();
+
+            REQUIRE(jit.GetVector(0) == lhs);
+            REQUIRE(jit.GetVector(1) == rhs);
+            REQUIRE(jit.GetVector(2) == greater);
+            REQUIRE(jit.GetVector(3) == greater_equal);
+            REQUIRE(jit.GetVector(4) == Vector{greater[1], greater[0]});
+            REQUIRE(jit.GetVector(5) == Vector{greater_equal[1], greater_equal[0]});
+            REQUIRE(jit.GetVector(6) == Vector{0, 0});
+            REQUIRE(jit.GetVector(7) == Vector{~u64{0}, ~u64{0}});
+            REQUIRE(jit.GetVector(8) == greater);
+            REQUIRE(jit.GetVector(9) == rhs);
+            REQUIRE(jit.GetVector(10) == lhs);
+            REQUIRE(jit.GetVector(11) == greater);
+            REQUIRE(jit.GetVector(12) == greater_equal);
+            REQUIRE(jit.GetVector(13) == rhs);
+            REQUIRE(jit.GetVector(14) == lhs);
+            REQUIRE(jit.GetVector(15) == greater_equal);
+        }
+    }
+}
+
 TEST_CASE("A64: ADD", "[a64]") {
     A64TestEnv env;
     A64::Jit jit{A64::UserConfig{&env}};
