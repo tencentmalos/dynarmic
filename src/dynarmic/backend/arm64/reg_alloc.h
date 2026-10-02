@@ -7,7 +7,7 @@
 
 #include <array>
 #include <optional>
-#include <random>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -21,6 +21,10 @@
 #include "dynarmic/ir/cond.h"
 #include "dynarmic/ir/microinstruction.h"
 #include "dynarmic/ir/value.h"
+
+namespace Dynarmic::IR {
+class Block;
+}
 
 namespace Dynarmic::Backend::Arm64 {
 
@@ -157,8 +161,10 @@ class RegAlloc final {
 public:
     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
 
-    explicit RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::vector<int> gpr_order, std::vector<int> fpr_order)
-            : code{code}, fpsr_manager{fpsr_manager}, gpr_order{gpr_order}, fpr_order{fpr_order}, rand_gen{std::random_device{}()} {}
+    explicit RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::vector<int> gpr_order, std::vector<int> fpr_order, const IR::Block* block = nullptr)
+            : code{code}, fpsr_manager{fpsr_manager}, gpr_order{gpr_order}, fpr_order{fpr_order}, block{block} {}
+
+    void SetInstructionIndex(size_t index) { instruction_index = index; }
 
     ArgumentInfo GetArgumentInfo(IR::Inst* inst);
     bool WasValueDefined(IR::Inst* inst) const;
@@ -333,7 +339,12 @@ private:
     HostLocInfo flags;
     std::array<HostLocInfo, SpillCount> spills;
 
-    mutable std::mt19937 rand_gen;
+    // Only build lookahead when the block actually needs to spill. No random
+    // seed, candidate allocation or use-map construction on the no-spill path.
+    const IR::Block* block;
+    size_t instruction_index = 0;
+    mutable bool future_uses_ready = false;
+    mutable std::unordered_map<const IR::Inst*, std::vector<size_t>> future_uses;
 
     tsl::robin_set<const IR::Inst*> defined_insts;
 };

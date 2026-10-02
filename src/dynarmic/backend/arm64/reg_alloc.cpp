@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <iterator>
+#include <limits>
 
 #include <mcl/assert.hpp>
 #include <mcl/bit/bit_field.hpp>
@@ -20,6 +21,7 @@
 #include "dynarmic/backend/arm64/fpsr_manager.h"
 #include "dynarmic/backend/arm64/verbose_debugging_output.h"
 #include "dynarmic/common/always_false.h"
+#include "dynarmic/ir/basic_block.h"
 
 namespace Dynarmic::Backend::Arm64 {
 
@@ -449,12 +451,61 @@ int RegAlloc::AllocateRegister(const std::array<HostLocInfo, 32>& regs, const st
         return *empty;
     }
 
-    std::vector<int> candidates;
-    std::copy_if(order.begin(), order.end(), std::back_inserter(candidates), [&](int i) { return regs[i].MaybeAllocatable(); });
+    if (block && !future_uses_ready) {
+        size_t index = 0;
+        for (const auto& inst : *block) {
+            ++index;
+            // VectorTable keeps its operands live until the lookup emitter
+            // consumes them, rather than consuming them at the table node.
+            if (IsValuelessType(inst.GetType())) {
+                continue;
+            }
+            const auto record_use = [&](const IR::Value& arg) {
+                if (!arg.IsImmediate()) {
+                    future_uses[arg.GetInst()].push_back(index);
+                }
+            };
+            for (size_t arg_index = 0; arg_index < inst.NumArgs(); ++arg_index) {
+                const auto arg = inst.GetArg(arg_index);
+                if (IsValuelessType(arg.GetType())) {
+                    const auto& table = *arg.GetInst();
+                    for (size_t i = 0; i < table.NumArgs(); ++i) {
+                        record_use(table.GetArg(i));
+                    }
+                } else {
+                    record_use(arg);
+                }
+            }
+        }
+        future_uses_ready = true;
+    }
 
-    // TODO: LRU
-    std::uniform_int_distribution<size_t> dis{0, candidates.size() - 1};
-    return candidates[dis(rand_gen)];
+    int candidate = -1;
+    size_t furthest = 0;
+    for (const int i : order) {
+        if (!regs[i].MaybeAllocatable()) {
+            continue;
+        }
+        size_t next_use = std::numeric_limits<size_t>::max();
+        // A register can contain several IR aliases. Its nearest remaining
+        // alias use determines how soon a spill would need to be reloaded.
+        for (const auto* value : regs[i].values) {
+            const auto uses = future_uses.find(value);
+            if (uses == future_uses.end()) {
+                continue;
+            }
+            const auto next = std::upper_bound(uses->second.begin(), uses->second.end(), instruction_index);
+            if (next != uses->second.end()) {
+                next_use = std::min(next_use, *next);
+            }
+        }
+        if (candidate == -1 || next_use > furthest) {
+            candidate = i;
+            furthest = next_use;
+        }
+    }
+    ASSERT_MSG(candidate != -1, "All registers are locked or realized");
+    return candidate;
 }
 
 void RegAlloc::SpillGpr(int index) {

@@ -25,6 +25,7 @@ if ("A64" IN_LIST DYNARMIC_FRONTENDS)
 
     target_sources(dynarmic_tests PRIVATE
         A64/a64.cpp
+        A64/spill_pressure.cpp
         A64/fibonacci.cpp
         A64/fp_min_max.cpp
         A64/misaligned_page_table.cpp
