@@ -400,7 +400,23 @@ template<HostLoc::Kind kind>
 int RegAlloc::RealizeReadWriteImpl(const IR::Value& read_value, const IR::Inst* write_value) {
     defined_insts.insert(write_value);
 
-    // TODO: Move elimination
+    // A destructive SIMD operand can keep its register at its final use.
+    // Account for all aliases, and retain the old identity until RAReg unlocks
+    // it. Multiple operands using the same value must still receive a copy.
+    if constexpr (kind == HostLoc::Kind::Fpr) {
+        if (!read_value.IsImmediate()) {
+            const auto location = ValueLocation(read_value.GetInst());
+            if (location && location->kind == kind) {
+                auto& info = ValueInfo(*location);
+                if (info.IsOneRemainingUse() && info.locked == 1 && !info.realized) {
+                    info.values.push_back(write_value);
+                    info.expected_uses += write_value->UseCount();
+                    info.realized = true;
+                    return location->index;
+                }
+            }
+        }
+    }
 
     const int write_loc = RealizeWriteImpl<kind>(write_value);
 

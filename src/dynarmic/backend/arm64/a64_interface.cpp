@@ -272,8 +272,13 @@ void Jit::SetVector(std::size_t index, Vector value) {
 
 std::array<Vector, 32> Jit::GetVectors() const {
     std::array<Vector, 32> ret;
-    std::memcpy(ret.data(), impl->VecRegs().data(), sizeof(ret));
+    GetVectors(ret);
     return ret;
+}
+
+void Jit::GetVectors(std::array<Vector, 32>& out) const {
+    static_assert(sizeof(out) == sizeof(impl->VecRegs()));
+    std::memcpy(out.data(), impl->VecRegs().data(), sizeof(out));
 }
 
 void Jit::SetVectors(const std::array<Vector, 32>& value) {

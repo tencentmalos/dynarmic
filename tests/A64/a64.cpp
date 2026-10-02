@@ -13,6 +13,45 @@
 using namespace Dynarmic;
 using namespace oaknut::util;
 
+TEST_CASE("A64: direct SIMD context copy", "[a64][simd-copy]") {
+    A64TestEnv env;
+    A64::Jit jit{A64::UserConfig{&env}};
+    std::array<Vector, 32> expected;
+    for (size_t i = 0; i < expected.size(); ++i) {
+        expected[i] = {0x1122334455667788ULL + i, 0x8877665544332211ULL - i};
+        jit.SetVector(i, expected[i]);
+    }
+    std::array<Vector, 32> context;
+    jit.GetVectors(context);
+    REQUIRE(context == expected);
+    REQUIRE(context == jit.GetVectors());
+    jit.SetVector(31, {0, 0});
+    REQUIRE(context == expected);
+    jit.SetVectors(context);
+    REQUIRE(jit.GetVector(31) == expected[31]);
+}
+
+TEST_CASE("A64: SIMD inserts preserve live aliases", "[a64][simd-copy]") {
+    A64TestEnv env;
+    A64::Jit jit{A64::UserConfig{&env}};
+    oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+    code.MOV(V1.B16(), V0.B16());
+    code.INS(V0.D()[1], X0);
+    code.INS(V0.D()[0], X1);
+    code.INS(V2.D()[0], V1.D()[1]);
+    code.INS(V2.D()[1], V0.D()[0]);
+    jit.SetVector(0, {0x1122334455667788, 0x8877665544332211});
+    jit.SetVector(2, {0, 0});
+    jit.SetRegister(0, 0xFEDCBA9876543210);
+    jit.SetRegister(1, 0x0123456789ABCDEF);
+    jit.SetPC(0);
+    env.ticks_left = env.code_mem.size();
+    jit.Run();
+    REQUIRE(jit.GetVector(0) == Vector{0x0123456789ABCDEF, 0xFEDCBA9876543210});
+    REQUIRE(jit.GetVector(1) == Vector{0x1122334455667788, 0x8877665544332211});
+    REQUIRE(jit.GetVector(2) == Vector{0x8877665544332211, 0x0123456789ABCDEF});
+}
+
 TEST_CASE("A64: unsigned 64-bit vector comparisons", "[a64][vector-u64]") {
     A64TestEnv env;
     A64::Jit jit{A64::UserConfig{&env}};

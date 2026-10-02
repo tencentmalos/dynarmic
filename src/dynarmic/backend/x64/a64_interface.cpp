@@ -186,9 +186,13 @@ public:
 
     std::array<Vector, 32> GetVectors() const {
         std::array<Vector, 32> ret;
-        static_assert(sizeof(ret) == sizeof(jit_state.vec));
-        std::memcpy(ret.data(), jit_state.vec.data(), sizeof(jit_state.vec));
+        GetVectors(ret);
         return ret;
+    }
+
+    void GetVectors(std::array<Vector, 32>& out) const {
+        static_assert(sizeof(out) == sizeof(jit_state.vec));
+        std::memcpy(out.data(), jit_state.vec.data(), sizeof(out));
     }
 
     void SetVectors(const std::array<Vector, 32>& value) {
@@ -410,6 +414,10 @@ void Jit::SetVector(size_t index, Vector value) {
 
 std::array<Vector, 32> Jit::GetVectors() const {
     return impl->GetVectors();
+}
+
+void Jit::GetVectors(std::array<Vector, 32>& out) const {
+    impl->GetVectors(out);
 }
 
 void Jit::SetVectors(const std::array<Vector, 32>& value) {

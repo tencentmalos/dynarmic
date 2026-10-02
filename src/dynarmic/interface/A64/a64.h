@@ -92,6 +92,8 @@ public:
 
     /// Read all floating point and SIMD registers.
     std::array<Vector, 32> GetVectors() const;
+    /// Copy SIMD registers directly into a caller-owned context, without a temporary array.
+    void GetVectors(std::array<Vector, 32>& out) const;
     /// Modify all floating point and SIMD registers.
     void SetVectors(const std::array<Vector, 32>& value);
 
