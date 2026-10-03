@@ -164,6 +164,14 @@ void PolyfillPass(IR::Block& block, const PolyfillOptions& polyfill) {
         ir.SetInsertionPointBefore(&inst);
 
         switch (inst.GetOpcode()) {
+        case IR::Opcode::VectorBitSelect:
+            if (polyfill.vector_bit_select) {
+                const IR::U128 mask{inst.GetArg(0)};
+                const IR::U128 on_true{inst.GetArg(1)};
+                const IR::U128 on_false{inst.GetArg(2)};
+                inst.ReplaceUsesWith(ir.VectorEor(on_false, ir.VectorAnd(mask, ir.VectorEor(on_true, on_false))));
+            }
+            break;
         case IR::Opcode::SHA256MessageSchedule0:
             if (polyfill.sha256) {
                 PolyfillSHA256MessageSchedule0(ir, inst);

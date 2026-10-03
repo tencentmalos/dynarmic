@@ -1360,6 +1360,19 @@ void EmitX64::EmitVectorDeinterleaveOddLower32(EmitContext& ctx, IR::Inst* inst)
     }
 }
 
+void EmitX64::EmitVectorBitSelect(EmitContext& ctx, IR::Inst* inst) {
+    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    const auto mask = ctx.reg_alloc.UseXmm(args[0]);
+    const auto on_true = ctx.reg_alloc.UseXmm(args[1]);
+    const auto on_false = ctx.reg_alloc.UseXmm(args[2]);
+    const auto result = ctx.reg_alloc.ScratchXmm();
+    code.movaps(result, on_true);
+    code.pxor(result, on_false);
+    code.pand(result, mask);
+    code.pxor(result, on_false);
+    ctx.reg_alloc.DefineValue(inst, result);
+}
+
 void EmitX64::EmitVectorEor(EmitContext& ctx, IR::Inst* inst) {
     EmitVectorOperation(code, ctx, inst, &Xbyak::CodeGenerator::pxor);
 }

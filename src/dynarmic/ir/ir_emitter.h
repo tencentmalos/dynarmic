@@ -227,6 +227,8 @@ public:
     U128 VectorAdd(size_t esize, const U128& a, const U128& b);
     U128 VectorAnd(const U128& a, const U128& b);
     U128 VectorAndNot(const U128& a, const U128& b);
+    /// Per-bit select: (mask & on_true) | (~mask & on_false).
+    U128 VectorBitSelect(const U128& mask, const U128& on_true, const U128& on_false);
     U128 VectorArithmeticShiftRight(size_t esize, const U128& a, u8 shift_amount);
     U128 VectorArithmeticVShift(size_t esize, const U128& a, const U128& b);
     U128 VectorBroadcast(size_t esize, const UAny& a);

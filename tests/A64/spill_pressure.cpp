@@ -26,7 +26,8 @@ constexpr struct Workload {
     const char* name;
     int registers;
     int rounds;
-} workloads[]{{"small", 3, 1}, {"medium", 22, 1}, {"pressure", 30, 4}};
+    bool select = false;
+} workloads[]{{"small", 3, 1}, {"medium", 22, 1}, {"pressure", 30, 4}, {"select", 6, 8, true}, {"select-pressure", 30, 4, true}};
 
 struct PressureProgram {
     std::array<u64, 31> initial_gpr{}, expected_gpr{};
@@ -49,9 +50,38 @@ struct PressureProgram {
                 const int next = (r + 1) % count;
                 code.EOR(oaknut::XReg{r}, oaknut::XReg{r}, oaknut::XReg{next});
                 expected_gpr[r] ^= expected_gpr[next];
-                code.EOR(oaknut::QReg{r}.B16(), oaknut::QReg{r}.B16(), oaknut::QReg{next}.B16());
-                expected_vec[r][0] ^= expected_vec[next][0];
-                expected_vec[r][1] ^= expected_vec[next][1];
+                if (workload.select) {
+                    const int mask = (r + 2) % count;
+                    switch (round % 3) {
+                    case 0:
+                        code.BSL(oaknut::QReg{r}.B16(), oaknut::QReg{next}.B16(), oaknut::QReg{mask}.B16());
+                        break;
+                    case 1:
+                        code.BIT(oaknut::QReg{r}.B16(), oaknut::QReg{next}.B16(), oaknut::QReg{mask}.B16());
+                        break;
+                    case 2:
+                        code.BIF(oaknut::QReg{r}.B16(), oaknut::QReg{next}.B16(), oaknut::QReg{mask}.B16());
+                        break;
+                    }
+                    for (int lane = 0; lane < 2; ++lane) {
+                        const u64 d = expected_vec[r][lane], n = expected_vec[next][lane], m = expected_vec[mask][lane];
+                        switch (round % 3) {
+                        case 0:
+                            expected_vec[r][lane] = (d & n) | (~d & m);
+                            break;
+                        case 1:
+                            expected_vec[r][lane] = (m & n) | (~m & d);
+                            break;
+                        case 2:
+                            expected_vec[r][lane] = (m & d) | (~m & n);
+                            break;
+                        }
+                    }
+                } else {
+                    code.EOR(oaknut::QReg{r}.B16(), oaknut::QReg{r}.B16(), oaknut::QReg{next}.B16());
+                    expected_vec[r][0] ^= expected_vec[next][0];
+                    expected_vec[r][1] ^= expected_vec[next][1];
+                }
             }
         }
         code.B(std::ptrdiff_t{0});  // A separate terminal self-loop stops at the tick budget.
@@ -89,6 +119,15 @@ void ReportCodeSize(A64TestEnv& env, const char* workload) {
     pattern_code.LDR(X0, SP, 0);
     pattern_code.STR(Q0, SP, 0);
     pattern_code.LDR(Q0, SP, 0);
+    std::array<u32, 6> vector_patterns{};
+    oaknut::CodeGenerator vector_code{vector_patterns.data()};
+    vector_code.BSL(Q0.B16(), Q0.B16(), Q0.B16());
+    vector_code.BIF(Q0.B16(), Q0.B16(), Q0.B16());
+    vector_code.BIT(Q0.B16(), Q0.B16(), Q0.B16());
+    vector_code.EOR(Q0.B16(), Q0.B16(), Q0.B16());
+    vector_code.AND(Q0.B16(), Q0.B16(), Q0.B16());
+    vector_code.MOV(Q0.B16(), Q0.B16());
+    constexpr u32 vector_operand_mask = 31 | (31 << 5) | (31 << 16);
     constexpr u32 operand_mask = 31 | (4095 << 10);
     for (int sample = 0; sample < 20; ++sample) {
         auto block = address_space.GenerateIR(IR::LocationDescriptor{0});
@@ -96,7 +135,17 @@ void ReportCodeSize(A64TestEnv& env, const char* workload) {
         oaknut::CodeGenerator code{instructions.data()};
         const auto result = EmitArm64(code, std::move(block), config, fastmem);
         size_t loads = 0, stores = 0;
+        std::array<size_t, 6> vector_counts{};
+        u64 body_hash = 14695981039346656037ULL;
         for (size_t i = 0; i < result.size / sizeof(u32); ++i) {
+            body_hash = (body_hash ^ instructions[i]) * 1099511628211ULL;
+            for (size_t kind = 0; kind < vector_patterns.size(); ++kind) {
+                if ((instructions[i] & ~vector_operand_mask) == vector_patterns[kind]) {
+                    // MOV is the ORR alias with the same source twice.
+                    if (kind != 5 || ((instructions[i] >> 5) & 31) == ((instructions[i] >> 16) & 31))
+                        ++vector_counts[kind];
+                }
+            }
             for (size_t kind = 0; kind < patterns.size(); ++kind) {
                 const auto word = instructions[i];
                 if ((word & ~operand_mask) != patterns[kind])
@@ -110,8 +159,8 @@ void ReportCodeSize(A64TestEnv& env, const char* workload) {
                     ++stores;
             }
         }
-        std::printf("AUDIT_CODE workload=%s sample=%d words=%zu spill_loads=%zu spill_stores=%zu\n",
-                    workload, sample, result.size / sizeof(u32), loads, stores);
+        std::printf("AUDIT_CODE workload=%s sample=%d words=%zu spill_loads=%zu spill_stores=%zu bsl=%zu bif=%zu bit=%zu eor=%zu and=%zu vector_mov=%zu body_hash=%llu\n",
+                    workload, sample, result.size / sizeof(u32), loads, stores, vector_counts[0], vector_counts[1], vector_counts[2], vector_counts[3], vector_counts[4], vector_counts[5], static_cast<unsigned long long>(body_hash));
     }
 }
 #endif

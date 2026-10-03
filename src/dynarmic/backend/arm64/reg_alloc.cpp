@@ -129,14 +129,31 @@ void HostLocInfo::UpdateUses() {
     }
 }
 
+RegAlloc::RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::vector<int> gpr_order, std::vector<int> fpr_order, IR::Block* block, bool verify_locations)
+        : code{code}, fpsr_manager{fpsr_manager}, gpr_order{std::move(gpr_order)}, fpr_order{std::move(fpr_order)}, verify_locations{verify_locations}, block{block} {
+#ifndef NDEBUG
+    this->verify_locations = true;
+#endif
+    if (block) {
+        value_locations.reserve(block->size());
+        for (auto& inst : *block) {
+            inst.SetName(static_cast<unsigned>(value_locations.size() + 1));
+            value_locations.push_back({&inst, std::nullopt});
+        }
+    }
+    touched_locations.reserve(16);
+}
+
 RegAlloc::ArgumentInfo RegAlloc::GetArgumentInfo(IR::Inst* inst) {
     ArgumentInfo ret = {Argument{*this}, Argument{*this}, Argument{*this}, Argument{*this}};
     for (size_t i = 0; i < inst->NumArgs(); i++) {
         const IR::Value arg = inst->GetArg(i);
         ret[i].value = arg;
         if (!arg.IsImmediate() && !IsValuelessType(arg.GetType())) {
-            ASSERT_MSG(ValueLocation(arg.GetInst()), "argument must already been defined");
-            ValueInfo(arg.GetInst()).uses_this_inst++;
+            const auto location = ValueLocation(arg.GetInst());
+            ASSERT_MSG(location, "argument must already been defined");
+            ValueInfo(*location).uses_this_inst++;
+            TouchLocation(*location);
         }
     }
     return ret;
@@ -144,6 +161,18 @@ RegAlloc::ArgumentInfo RegAlloc::GetArgumentInfo(IR::Inst* inst) {
 
 bool RegAlloc::WasValueDefined(IR::Inst* inst) const {
     return defined_insts.count(inst) > 0;
+}
+
+bool RegAlloc::CanReuseFpr(const Argument& arg) const {
+    if (arg.IsImmediate()) {
+        return false;
+    }
+    const auto loc = ValueLocation(arg.value.GetInst());
+    if (!loc || loc->kind != HostLoc::Kind::Fpr) {
+        return false;
+    }
+    const auto& info = fprs[loc->index];
+    return info.IsOneRemainingUse() && !info.locked && !info.realized;
 }
 
 void RegAlloc::PrepareForCall(std::optional<Argument::copyable_reference> arg0, std::optional<Argument::copyable_reference> arg1, std::optional<Argument::copyable_reference> arg2, std::optional<Argument::copyable_reference> arg3) {
@@ -200,31 +229,57 @@ void RegAlloc::DefineAsExisting(IR::Inst* inst, Argument& arg) {
         return;
     }
 
-    auto& info = ValueInfo(arg.value.GetInst());
+    const auto location = ValueLocation(arg.value.GetInst());
+    ASSERT(location);
+    auto& info = ValueInfo(*location);
     info.values.push_back(inst);
     info.expected_uses += inst->UseCount();
+    SetValueLocation(inst, location);
+    TouchLocation(*location);
 }
 
 void RegAlloc::DefineAsRegister(IR::Inst* inst, oaknut::Reg reg) {
     defined_insts.insert(inst);
 
     ASSERT(!ValueLocation(inst));
-    auto& info = reg.is_vector() ? fprs[reg.index()] : gprs[reg.index()];
-    ASSERT(info.IsCompletelyEmpty());
-    info.values.push_back(inst);
-    info.expected_uses += inst->UseCount();
+    const HostLoc location{reg.is_vector() ? HostLoc::Kind::Fpr : HostLoc::Kind::Gpr, reg.index()};
+    SetupLocation(location, inst);
+    ValueInfo(location).realized = false;
 }
 
 void RegAlloc::UpdateAllUses() {
-    for (auto& gpr : gprs) {
-        gpr.UpdateUses();
+    for (const auto location : touched_locations) {
+        auto& info = ValueInfo(location);
+        if (info.accumulated_uses + info.uses_this_inst == info.expected_uses) {
+            for (const auto* value : info.values) {
+                SetValueLocation(value, std::nullopt);
+            }
+        }
+        info.UpdateUses();
     }
-    for (auto& fpr : fprs) {
-        fpr.UpdateUses();
-    }
-    flags.UpdateUses();
-    for (auto& spill : spills) {
-        spill.UpdateUses();
+    touched_locations.clear();
+    touched_mask.reset();
+    if (verify_locations) {
+        const auto verify = [&](const HostLocInfo& info) {
+            ASSERT(info.uses_this_inst == 0);
+            ASSERT(info.values.empty() || info.accumulated_uses < info.expected_uses);
+            for (const auto* value : info.values) {
+                ASSERT(ValueLocation(value) == ScanValueLocation(value));
+            }
+        };
+        for (const auto& info : gprs)
+            verify(info);
+        for (const auto& info : fprs)
+            verify(info);
+        verify(flags);
+        for (const auto& info : spills)
+            verify(info);
+        for (const auto& entry : value_locations) {
+            ASSERT(entry.location == ScanValueLocation(entry.value));
+        }
+        for (const auto& [value, location] : external_locations) {
+            ASSERT(location == ScanValueLocation(value));
+        }
     }
 }
 
@@ -341,7 +396,7 @@ int RegAlloc::RealizeReadImpl(const IR::Value& value) {
             break;
         }
 
-        gprs[new_location_index] = std::exchange(ValueInfo(*current_location), {});
+        MoveLocation(*current_location, {HostLoc::Kind::Gpr, new_location_index});
         gprs[new_location_index].realized = true;
         return new_location_index;
     } else if constexpr (required_kind == HostLoc::Kind::Fpr) {
@@ -363,7 +418,7 @@ int RegAlloc::RealizeReadImpl(const IR::Value& value) {
             break;
         }
 
-        fprs[new_location_index] = std::exchange(ValueInfo(*current_location), {});
+        MoveLocation(*current_location, {HostLoc::Kind::Fpr, new_location_index});
         fprs[new_location_index].realized = true;
         return new_location_index;
     } else if constexpr (required_kind == HostLoc::Kind::Flags) {
@@ -382,16 +437,16 @@ int RegAlloc::RealizeWriteImpl(const IR::Inst* value) {
     if constexpr (kind == HostLoc::Kind::Gpr) {
         const int new_location_index = AllocateRegister(gprs, gpr_order);
         SpillGpr(new_location_index);
-        gprs[new_location_index].SetupLocation(value);
+        SetupLocation({HostLoc::Kind::Gpr, new_location_index}, value);
         return new_location_index;
     } else if constexpr (kind == HostLoc::Kind::Fpr) {
         const int new_location_index = AllocateRegister(fprs, fpr_order);
         SpillFpr(new_location_index);
-        fprs[new_location_index].SetupLocation(value);
+        SetupLocation({HostLoc::Kind::Fpr, new_location_index}, value);
         return new_location_index;
     } else if constexpr (kind == HostLoc::Kind::Flags) {
         SpillFlags();
-        flags.SetupLocation(value);
+        SetupLocation({HostLoc::Kind::Flags, 0}, value);
         return 0;
     } else {
         static_assert(Common::always_false_v<mcl::mp::lift_value<kind>>);
@@ -413,6 +468,8 @@ int RegAlloc::RealizeReadWriteImpl(const IR::Value& read_value, const IR::Inst* 
                 if (info.IsOneRemainingUse() && info.locked == 1 && !info.realized) {
                     info.values.push_back(write_value);
                     info.expected_uses += write_value->UseCount();
+                    SetValueLocation(write_value, location);
+                    TouchLocation(*location);
                     info.realized = true;
                     return location->index;
                 }
@@ -515,7 +572,7 @@ void RegAlloc::SpillGpr(int index) {
     }
     const int new_location_index = FindFreeSpill();
     code.STR(oaknut::XReg{index}, SP, spill_offset + new_location_index * spill_slot_size);
-    spills[new_location_index] = std::exchange(gprs[index], {});
+    MoveLocation({HostLoc::Kind::Gpr, index}, {HostLoc::Kind::Spill, new_location_index});
 }
 
 void RegAlloc::SpillFpr(int index) {
@@ -525,7 +582,7 @@ void RegAlloc::SpillFpr(int index) {
     }
     const int new_location_index = FindFreeSpill();
     code.STR(oaknut::QReg{index}, SP, spill_offset + new_location_index * spill_slot_size);
-    spills[new_location_index] = std::exchange(fprs[index], {});
+    MoveLocation({HostLoc::Kind::Fpr, index}, {HostLoc::Kind::Spill, new_location_index});
 }
 
 void RegAlloc::ReadWriteFlags(Argument& read, IR::Inst* write) {
@@ -554,7 +611,7 @@ void RegAlloc::ReadWriteFlags(Argument& read, IR::Inst* write) {
     }
 
     if (write) {
-        flags.SetupLocation(write);
+        SetupLocation({HostLoc::Kind::Flags, 0}, write);
         flags.realized = false;
     }
 }
@@ -567,7 +624,7 @@ void RegAlloc::SpillFlags() {
     const int new_location_index = AllocateRegister(gprs, gpr_order);
     SpillGpr(new_location_index);
     code.MRS(oaknut::XReg{new_location_index}, oaknut::SystemReg::NZCV);
-    gprs[new_location_index] = std::exchange(flags, {});
+    MoveLocation({HostLoc::Kind::Flags, 0}, {HostLoc::Kind::Gpr, new_location_index});
 }
 
 int RegAlloc::FindFreeSpill() const {
@@ -627,7 +684,7 @@ void RegAlloc::LoadCopyInto(const IR::Value& value, oaknut::QReg reg) {
     }
 }
 
-std::optional<HostLoc> RegAlloc::ValueLocation(const IR::Inst* value) const {
+std::optional<HostLoc> RegAlloc::ScanValueLocation(const IR::Inst* value) const {
     const auto contains_value = [value](const HostLocInfo& info) { return info.Contains(value); };
 
     if (const auto iter = std::find_if(gprs.begin(), gprs.end(), contains_value); iter != gprs.end()) {
@@ -660,21 +717,66 @@ HostLocInfo& RegAlloc::ValueInfo(HostLoc host_loc) {
 }
 
 HostLocInfo& RegAlloc::ValueInfo(const IR::Inst* value) {
-    const auto contains_value = [value](const HostLocInfo& info) { return info.Contains(value); };
+    const auto location = ValueLocation(value);
+    ASSERT_MSG(location, "RegAlloc::ValueInfo: Value not found");
+    return ValueInfo(*location);
+}
 
-    if (const auto iter = std::find_if(gprs.begin(), gprs.end(), contains_value); iter != gprs.end()) {
-        return *iter;
+std::optional<HostLoc> RegAlloc::ValueLocation(const IR::Inst* value) const {
+    std::optional<HostLoc> location;
+    // IR reserves name zero for unnamed instructions. Unsigned underflow
+    // takes such external values directly to the pointer-keyed fallback.
+    const auto name = value->GetName() - 1;
+    if (name < value_locations.size() && value_locations[name].value == value) {
+        location = value_locations[name].location;
+    } else if (const auto it = external_locations.find(value); it != external_locations.end()) {
+        location = it->second;
     }
-    if (const auto iter = std::find_if(fprs.begin(), fprs.end(), contains_value); iter != fprs.end()) {
-        return *iter;
+    if (verify_locations) {
+        ASSERT(location == ScanValueLocation(value));
     }
-    if (contains_value(flags)) {
-        return flags;
+    return location;
+}
+
+void RegAlloc::SetValueLocation(const IR::Inst* value, std::optional<HostLoc> location) {
+    // IR reserves name zero for unnamed instructions. Unsigned underflow
+    // takes such external values directly to the pointer-keyed fallback.
+    const auto name = value->GetName() - 1;
+    if (name < value_locations.size() && value_locations[name].value == value) {
+        value_locations[name].location = location;
+    } else if (location) {
+        external_locations.insert_or_assign(value, *location);
+    } else {
+        external_locations.erase(value);
     }
-    if (const auto iter = std::find_if(spills.begin(), spills.end(), contains_value); iter != spills.end()) {
-        return *iter;
+}
+
+void RegAlloc::TouchLocation(HostLoc location) {
+    const auto index = location.kind == HostLoc::Kind::Gpr   ? location.index
+                     : location.kind == HostLoc::Kind::Fpr   ? 32 + location.index
+                     : location.kind == HostLoc::Kind::Flags ? 64
+                                                             : 65 + location.index;
+    if (!touched_mask.test(index)) {
+        touched_mask.set(index);
+        touched_locations.push_back(location);
     }
-    ASSERT_FALSE("RegAlloc::ValueInfo: Value not found");
+}
+
+void RegAlloc::SetupLocation(HostLoc location, const IR::Inst* value) {
+    ValueInfo(location).SetupLocation(value);
+    SetValueLocation(value, location);
+    TouchLocation(location);
+}
+
+void RegAlloc::MoveLocation(HostLoc from, HostLoc to) {
+    ASSERT(ValueInfo(to).IsCompletelyEmpty());
+    auto& destination = ValueInfo(to);
+    destination = std::exchange(ValueInfo(from), {});
+    for (const auto* value : destination.values) {
+        SetValueLocation(value, to);
+    }
+    TouchLocation(from);
+    TouchLocation(to);
 }
 
 }  // namespace Dynarmic::Backend::Arm64

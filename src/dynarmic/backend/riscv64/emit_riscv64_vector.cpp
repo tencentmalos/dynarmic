@@ -18,6 +18,11 @@
 namespace Dynarmic::Backend::RV64 {
 
 template<>
+void EmitIR<IR::Opcode::VectorBitSelect>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
+    ASSERT_FALSE("VectorBitSelect must be lowered by PolyfillPass");
+}
+
+template<>
 void EmitIR<IR::Opcode::VectorGetElement8>(biscuit::Assembler&, EmitContext&, IR::Inst*) {
     UNIMPLEMENTED();
 }

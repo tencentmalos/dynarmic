@@ -996,6 +996,10 @@ U128 IREmitter::VectorAndNot(const U128& a, const U128& b) {
     return Inst<U128>(Opcode::VectorAndNot, a, b);
 }
 
+U128 IREmitter::VectorBitSelect(const U128& mask, const U128& on_true, const U128& on_false) {
+    return Inst<U128>(Opcode::VectorBitSelect, mask, on_true, on_false);
+}
+
 U128 IREmitter::VectorArithmeticShiftRight(size_t esize, const U128& a, u8 shift_amount) {
     switch (esize) {
     case 8:

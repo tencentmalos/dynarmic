@@ -6,6 +6,7 @@
 #pragma once
 
 #include <array>
+#include <bitset>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -39,6 +40,8 @@ struct HostLoc final {
         Spill,
     } kind;
     int index;
+
+    bool operator==(const HostLoc&) const = default;
 };
 
 enum RWType {
@@ -161,13 +164,13 @@ class RegAlloc final {
 public:
     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
 
-    explicit RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::vector<int> gpr_order, std::vector<int> fpr_order, const IR::Block* block = nullptr)
-            : code{code}, fpsr_manager{fpsr_manager}, gpr_order{gpr_order}, fpr_order{fpr_order}, block{block} {}
+    explicit RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::vector<int> gpr_order, std::vector<int> fpr_order, IR::Block* block = nullptr, bool verify_locations = false);
 
     void SetInstructionIndex(size_t index) { instruction_index = index; }
 
     ArgumentInfo GetArgumentInfo(IR::Inst* inst);
     bool WasValueDefined(IR::Inst* inst) const;
+    bool CanReuseFpr(const Argument& arg) const;
 
     auto ReadX(Argument& arg) { return RAReg<oaknut::XReg>{*this, RWType::Read, arg.value, nullptr}; }
     auto ReadW(Argument& arg) { return RAReg<oaknut::WReg>{*this, RWType::Read, arg.value, nullptr}; }
@@ -326,6 +329,11 @@ private:
     void LoadCopyInto(const IR::Value& value, oaknut::QReg reg);
 
     std::optional<HostLoc> ValueLocation(const IR::Inst* value) const;
+    std::optional<HostLoc> ScanValueLocation(const IR::Inst* value) const;
+    void SetValueLocation(const IR::Inst* value, std::optional<HostLoc> location);
+    void TouchLocation(HostLoc location);
+    void SetupLocation(HostLoc location, const IR::Inst* value);
+    void MoveLocation(HostLoc from, HostLoc to);
     HostLocInfo& ValueInfo(HostLoc host_loc);
     HostLocInfo& ValueInfo(const IR::Inst* value);
 
@@ -338,6 +346,18 @@ private:
     std::array<HostLocInfo, 32> fprs;
     HostLocInfo flags;
     std::array<HostLocInfo, SpillCount> spills;
+
+    struct ValueLocationEntry {
+        const IR::Inst* value;
+        std::optional<HostLoc> location;
+    };
+    // Names are assigned after optimization; pointer validation also permits
+    // standalone instructions in allocator tests without name collisions.
+    std::vector<ValueLocationEntry> value_locations;
+    std::unordered_map<const IR::Inst*, HostLoc> external_locations;
+    bool verify_locations;
+    std::bitset<65 + SpillCount> touched_mask;
+    std::vector<HostLoc> touched_locations;
 
     // Only build lookahead when the block actually needs to spill. No random
     // seed, candidate allocation or use-map construction on the no-spill path.

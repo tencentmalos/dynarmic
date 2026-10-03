@@ -21,6 +21,27 @@ namespace Dynarmic::Backend::Arm64 {
 
 using namespace oaknut::util;
 
+template<>
+void EmitIR<IR::Opcode::VectorBitSelect>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    // Prefer a dying operand. ReadWriteQ retains the alias/lifetime checks and
+    // copies the mask if no operand can be safely overwritten.
+    const int destructive = ctx.reg_alloc.CanReuseFpr(args[0]) ? 0
+                          : ctx.reg_alloc.CanReuseFpr(args[1]) ? 1
+                          : ctx.reg_alloc.CanReuseFpr(args[2]) ? 2 : 0;
+    auto result = ctx.reg_alloc.ReadWriteQ(args[destructive], inst);
+    auto first = ctx.reg_alloc.ReadQ(args[destructive == 0 ? 1 : 0]);
+    auto second = ctx.reg_alloc.ReadQ(args[destructive == 2 ? 1 : 2]);
+    RegAlloc::Realize(result, first, second);
+    if (destructive == 0) {
+        code.BSL(result->B16(), first->B16(), second->B16());
+    } else if (destructive == 1) {
+        code.BIF(result->B16(), second->B16(), first->B16());
+    } else {
+        code.BIT(result->B16(), second->B16(), first->B16());
+    }
+}
+
 template<typename EmitFn>
 static void EmitTwoOp(oaknut::CodeGenerator&, EmitContext& ctx, IR::Inst* inst, EmitFn emit) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);

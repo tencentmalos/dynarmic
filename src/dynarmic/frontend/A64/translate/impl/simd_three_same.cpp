@@ -1203,36 +1203,24 @@ bool TranslatorVisitor::FDIV_2(bool Q, bool sz, Vec Vm, Vec Vn, Vec Vd) {
 
 bool TranslatorVisitor::BIF(bool Q, Vec Vm, Vec Vn, Vec Vd) {
     const size_t datasize = Q ? 128 : 64;
-
-    const auto operand1 = V(datasize, Vd);
-    const auto operand4 = V(datasize, Vn);
-    const auto operand3 = ir.VectorNot(V(datasize, Vm));
-    const auto result = ir.VectorEor(operand1, ir.VectorAnd(ir.VectorEor(operand1, operand4), operand3));
-
+    const auto mask = V(datasize, Vm);
+    const auto result = ir.VectorBitSelect(mask, V(datasize, Vd), V(datasize, Vn));
     V(datasize, Vd, result);
     return true;
 }
 
 bool TranslatorVisitor::BIT(bool Q, Vec Vm, Vec Vn, Vec Vd) {
     const size_t datasize = Q ? 128 : 64;
-
-    const auto operand1 = V(datasize, Vd);
-    const auto operand4 = V(datasize, Vn);
-    const auto operand3 = V(datasize, Vm);
-    const auto result = ir.VectorEor(operand1, ir.VectorAnd(ir.VectorEor(operand1, operand4), operand3));
-
+    const auto mask = V(datasize, Vm);
+    const auto result = ir.VectorBitSelect(mask, V(datasize, Vn), V(datasize, Vd));
     V(datasize, Vd, result);
     return true;
 }
 
 bool TranslatorVisitor::BSL(bool Q, Vec Vm, Vec Vn, Vec Vd) {
     const size_t datasize = Q ? 128 : 64;
-
-    const auto operand4 = V(datasize, Vn);
-    const auto operand1 = V(datasize, Vm);
-    const auto operand3 = V(datasize, Vd);
-    const auto result = ir.VectorEor(operand1, ir.VectorAnd(ir.VectorEor(operand1, operand4), operand3));
-
+    const auto mask = V(datasize, Vd);
+    const auto result = ir.VectorBitSelect(mask, V(datasize, Vn), V(datasize, Vm));
     V(datasize, Vd, result);
     return true;
 }
